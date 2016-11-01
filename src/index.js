@@ -1,8 +1,22 @@
+/**
+ * @project
+ * sp-vkclient
+ *
+ * @description
+ * VK.com API client based on generator flow.
+ *
+ * @repository
+ * See `README.md` or visit GitHub repo for details:
+ * https://github.com/digitalhitler/sp-vkclient
+ *
+ * @author
+ * © Sergey Petrenko <spetrenko@me.com>
+ */
 'use strict';
 
-const EventEmitter = require('eventemitter3');
-const co = require('co');
-const c = require('chalk');
+const EventEmitter  = require('eventemitter3'),
+      co            = require('co'),
+      c             = require('chalk');
 
 class VK extends EventEmitter {
   constructor(config) {
