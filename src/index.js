@@ -15,20 +15,158 @@
 'use strict';
 
 const EventEmitter  = require('eventemitter3'),
+      debug         = require('debug')('sp-vkclient'),
       co            = require('co'),
       c             = require('chalk');
 
+
+// List of default settings & options values;
+const SPVK_OPTIONS = {
+  FULLSCOPE: 'notify,friends,photos,audio,video,docs,notes,pages,status,offers,questions,wall,groups,messages,email,notifications,stats,ads,market,offline',
+  DEFAULT_APPLICATION_ID: 2274003, // another one ID: 3140623;
+  DEFAULT_APPLICATION_SECRET: 'hHbZxrka2uZ6jB1inYsH' // and another one secret: 'VeWdmVclDCtn6ihuP1nt';
+}
+
+/**
+ * @class VK
+ * @extends EventEmitter
+ */
 class VK extends EventEmitter {
+  /**
+   * VK Client object constructor
+   * @param config
+   */
   constructor(config) {
     super();
+
+    // Fill general state values
     this.initialized = false;
     this.authorized = false;
-    this.verbose = true;
-    this.when = this.on;
+    this.verbose = config.verbose || false;
     this.lastRequest = 0;
+
+    // Add links to response constructors:
     this.SuccessResponse = require("./Response/SuccessResponse");
     this.ErrorResponse = require("./Response/ErrorResponse");
-    let result = this.init(config);
+
+    // And schema-based objects:
+    this.Objects = {
+      Videoalbum: require("./Object/VKVideoalbum")
+    };
+
+    // Enable verbose mode if requested
+    if(this.verbose) {
+      if(!process.env.DEBUG) {
+        process.env.DEBUG = 'sp-vkclient:*'
+      }
+    }
+  }
+
+  /**
+   * Perform full cycle of initialization process
+   * @param config
+   * @param force
+   * @returns {Promise<U>|Promise.<T>} Promise that resolves with initialized instance of VKClient
+   */
+  static initialize(config) {
+
+    async function performInitialization(config) {
+      let facadeInstance;
+      try {
+        facadeInstance        = new VK(config);
+        facadeInstance.config = VK.normalizeConfiguration(config);
+        facadeInstance.log    = debug;
+        facadeInstance._request = require('request-promise');
+
+        if(facadeInstance.config.auth && facadeInstance.config.auth.need === true) {
+          facadeInstance.log('VKClient: authorizing by credentials');
+          let authorized = facadeInstance.authorizeByLogin(facadeInstance.config.auth.login, facadeInstance.config.auth.password);
+            if(authorized.access_token && authorized.user_id && authorized.email) {
+              facadeInstance.config.token = authorized.access_token;
+              facadeInstance.authorized = true;
+              facadeInstance.userEmail = authorized.email;
+              delete facadeInstance.config.auth;
+            }
+        }
+
+        if(facadeInstance.config.fastLoad !== true) {
+
+          let currentUser = await facadeInstance.getUsers([]);
+          if (currentUser && currentUser[0] && currentUser[0].id) {
+            facadeInstance.userId        = currentUser[0].id;
+            facadeInstance.userFirstName = currentUser[0].first_name;
+            facadeInstance.userLastName  = currentUser[0].last_name;
+
+            if (facadeInstance.verbose) facadeInstance.log('VKClient: authorized as ' + facadeInstance.userId);
+            facadeInstance.authorized = true;
+            return facadeInstance;
+          } else {
+            return false;
+          }
+        }
+
+        facadeInstance.initialized = true;
+        facadeInstance.log('Completely initialized VK client', config);
+        facadeInstance.emit('client:initialized');
+
+        return facadeInstance;
+      } catch(e) {
+        throw e;
+      }
+    }
+    return new Promise((done, failed) => {
+      let client = performInitialization(config);
+      if(client.initialized === true) {
+        done(client);
+      } else {
+        failed(client);
+      }
+    }).catch((err) => {
+      VK.handleError(err);
+    });
+  }
+
+  static normalizeConfiguration(config) {
+    let normalizedConfig = {};
+
+    normalizedConfig.appId = config.appId || SPVK_OPTIONS.DEFAULT_APPLICATION_ID;
+    normalizedConfig.appSecret = config.appSecret || SPVK_OPTIONS.DEFAULT_APPLICATION_SECRET;
+
+    normalizedConfig.fastInit = config.fastInit || false;
+
+    if(config.requestsInterval) {
+      if(typeof config.requestsInterval === 'number') {
+        normalizedConfig.requestsInterval = (config.requestsInterval === 0 ? null : config.requestsInterval);
+      } else {
+        throw new TypeError(`passed config.requestsInterval is not a number.`);
+      }
+    } else {
+      normalizedConfig.requestsInterval = 330;
+    }
+
+    normalizedConfig.scope = config.scope || SPVK_OPTIONS.FULLSCOPE;
+    if(typeof normalizedConfig.scope !== 'array' && normalizedConfig.scope.split) {
+      normalizedConfig.scope = normalizedConfig.scope.split(',');
+    }
+    normalizedConfig.lang = config.lang || 0;
+    normalizedConfig.version = config.version || '5.58';
+
+    if(config.token !== undefined) {
+      normalizedConfig.token = config.token || null;
+    }
+
+    if(config.auth) {
+      // @todo: implement!
+      if(!config.auth.login || !config.auth.password) {
+        throw new ReferenceError(`config.auth is set but no login and password properties are present!`);
+      } else {
+        normalizedConfig.auth = config.auth;
+        normalizedConfig.auth.need = true;
+        delete normalizedConfig.token;
+      }
+    }
+
+    return normalizedConfig;
   }
 
   init(config, force = false) {
@@ -46,32 +184,7 @@ class VK extends EventEmitter {
         }
       });
       if(!this.initialized || force === true) {
-        this.config = {};
 
-        this.config.appId = config.appId || 2274003; //3140623;
-        this.config.appSecret = config.appSecret || 'hHbZxrka2uZ6jB1inYsH'; // 'VeWdmVclDCtn6ihuP1nt';
-
-        this.config.scope = config.scope || 'notify,friends,photos,audio,video,docs,notes,pages,status,offers,questions,wall,groups,messages,email,notifications,stats,ads,market,offline';
-        if(typeof this.config.scope !== 'array' && this.config.scope.split) {
-          this.config.scope = this.config.scope.split(',');
-        }
-        this.config.lang = config.lang || 0;
-        this.config.version = config.version || '5.58';
-
-        if(config.token !== undefined) {
-          this.config.token = config.token || null;
-        }
-
-        if(config.auth) {
-          // @todo: implement!
-          if(!config.auth.login || !config.auth.password) {
-            throw new ReferenceError(`config.auth is set but no login or password property are present!`);
-          } else {
-            this.config.auth = config.auth;
-            this.config.auth.need = true;
-            delete this.config.token;
-          }
-        }
 
         if(this.verbose) {
           console.log('Creating instance of VKClient.');
@@ -145,10 +258,10 @@ class VK extends EventEmitter {
     yield 'time';
   }
 
-  apiRequest (method, params = {}) {
+  apiRequestPlain (method, params = {}) {
     let reject = false;
     let request = [ method, params ];
-    console.log(request);
+
     if(!this._request || typeof this._request !== 'function') {
       reject = new ReferenceError(`Cant send requests while client is not initialized fully yet.`);
     }
@@ -182,11 +295,17 @@ class VK extends EventEmitter {
       json: true
     })
         .then(reply => {
+          // @todo: refactor this condition
           if(!reply.error && !reply.response.error) {
-            return new this.SuccessResponse(reply, request);
+            let result = new this.SuccessResponse(reply, request);
+            result.request = request;
+            return result;
 
           } else {
-            return new this.ErrorResponse(reply.error || reply.response.error, request);
+            // @todo: implement error codes & descriptions from https://vk.com/dev/errors
+            let result = new this.ErrorResponse(reply.error || reply.response.error, request);
+            result.request = request;
+            return result;
           }
         })
         .catch(error => {
@@ -195,7 +314,7 @@ class VK extends EventEmitter {
           debugger;
           // Connection was lost, trying to resend data
       if (error.error && ~['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED'].indexOf(error.error.code))
-        return apiRequest.call(this, url, params);
+        return apiRequestPlain.call(this, url, params);
 
       // Captcha needed
       if (error.code === 14) {
@@ -215,7 +334,7 @@ class VK extends EventEmitter {
     });
   }
 
-  authorizeByLogin() {
+  async authorizeByLogin() {
     return this._request('https://oauth.vk.com/token', {
       qs: {
         grant_type:    'password',
@@ -235,20 +354,29 @@ class VK extends EventEmitter {
   //
   //  return "resultofreturn" + ownerId;
   //}
-  getVideoAlbums(ownerId = null, need_system = 0) {
+  async getVideoAlbums(ownerId = null, needSystem = 1) {
     let self = this;
-    return self.apiRequest('execute', this.prepareExecuteQuery('video.getAlbums', {
+    let albums = await self.apiRequestPlain('execute', this.prepareExecuteQuery('video.getAlbums', {
       extended: 1,
-      need_system: 1,
+      need_system: needSystem,
       owner_id: ownerId || null
     }));
+    let formatted;
+
+    if(albums && albums instanceof this.SuccessResponse) {
+      formatted = albums.getFormattedItems(this.Objects.Videoalbum);
+      debugger;
+    }
+
+    console.log('done', albums);
+    debugger;
   }
 
-  getVideo(ownerId = null, videoId = null, accessKey = '') {
+  async getVideo(ownerId = null, videoId = null, accessKey = '') {
     if(typeof accessKey === 'string' && accessKey.length > 0) {
       accessKey = '_' + accessKey;
     }
-    return this.apiRequest('video.get', {
+    return this.apiRequestPlain('video.get', {
       videos: ownerId + '_' + videoId + accessKey,
       count: 200,
       extended: 1
@@ -256,7 +384,7 @@ class VK extends EventEmitter {
   }
 
   getVideos(ownerId = null, albumId = null) {
-    return this.apiRequest('execute', this.prepareExecuteQuery('video.get', {
+    return this.apiRequestPlain('execute', this.prepareExecuteQuery('video.get', {
       owner_id: ownerId || null,
       album_id: albumId || null,
       count: 200,
@@ -270,7 +398,7 @@ class VK extends EventEmitter {
     } else if(ids === undefined || ids === null) {
       ids = null;
     }
-    return this.apiRequest('users.get', this.prepareQuery({
+    return this.apiRequestPlain('users.get', this.prepareQuery({
       user_ids: ids
     }));
   }
@@ -281,7 +409,7 @@ class VK extends EventEmitter {
     } else if(ids === undefined || ids === null) {
       ids = null;
     }
-    return this.apiRequest('groups.getById', this.prepareQuery({
+    return this.apiRequestPlain('groups.getById', this.prepareQuery({
       group_ids: ids
     }));
   }
