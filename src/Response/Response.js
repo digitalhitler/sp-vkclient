@@ -16,7 +16,7 @@ class VKResponse {
           method: req[0],
           params: req[1]
         };
-      } else if(typeof req === 'object' && req.method && req.params) {
+      } else if(typeof req === 'object' && (req.method && req.params || req.length === 2)) {
         this._request = req;
       } else {
         this._requestHasBeenSet = false;
@@ -28,7 +28,17 @@ class VKResponse {
   }
 
   get request() {
-    return this._request;
+    return this._request || null;
+  }
+
+  get data() {
+    return this._data || false;
+  }
+
+  get response() {
+    if(this._data && this._data.response) {
+      return this._data.response;
+    } else return false;
   }
 
   toString() {
