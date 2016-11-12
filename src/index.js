@@ -15,7 +15,7 @@
 'use strict';
 
 const EventEmitter  = require('eventemitter3'),
-      debug         = require('debug')('sp-vkclient'),
+      debug         = require('debug'),
       co            = require('co'),
       c             = require('chalk');
 
@@ -75,7 +75,7 @@ class VK extends EventEmitter {
   }
 
   static getLogger(name) {
-    return (name && this.verbose === true ? debug(`sp-vkclient:${name}`) : VK.__fakeLogger);
+    return debug(`sp-vkclient:${name}`);
   }
 
   /**
@@ -86,10 +86,9 @@ class VK extends EventEmitter {
    */
   static initialize(config) {
 
-    let logger = VK.getLogger('init');
-
     async function performInitialization(config) {
-      let facadeInstance;
+      let logger = VK.getLogger('init'),
+          facadeInstance;
 
       logger('Peforming initialization...');
 
@@ -109,22 +108,29 @@ class VK extends EventEmitter {
               facadeInstance.userEmail = authorized.email || '';
               delete facadeInstance.config.auth;
 
-              logger()
+              logger(`Authorized as ${authorized.user_id} successfully.\nGot token: ${authorized.access_token}`);
             }
         }
 
-        if(facadeInstance.config.fastLoad !== true) {
+        if(facadeInstance.config.fastInit !== true) {
 
+          logger(`Deanonimizing user...`);
           let currentUser = await facadeInstance.getUsers([]);
 
-          if (currentUser && currentUser[0] && currentUser[0].id) {
-            facadeInstance.userId        = currentUser[0].id;
-            facadeInstance.userFirstName = currentUser[0].first_name;
-            facadeInstance.userLastName  = currentUser[0].last_name;
+          if(currentUser && currentUser._type && currentUser._type === 'Success') {
+            currentUser = currentUser._data.response;
 
-            if (facadeInstance.verbose) facadeInstance.log('VKClient: authorized as ' + facadeInstance.userId);
-            facadeInstance.authorized = true;
-            return facadeInstance;
+
+            if (currentUser && currentUser[0] && currentUser[0].id) {
+              facadeInstance.userId        = currentUser[0].id;
+              facadeInstance.userFirstName = currentUser[0].first_name;
+              facadeInstance.userLastName  = currentUser[0].last_name;
+
+              if (facadeInstance.verbose) logger('VKClient: authorized as ' + facadeInstance.userId);
+              facadeInstance.authorized = true;
+            } else {
+              // @todo: handle inproper (but looking good) response.
+            }
           } else {
             // @todo: simplify usage of VKRequestError - make it to catch request & response metadata automatically
             VK.handleError(new facadeInstance.VKRequestError({
@@ -132,13 +138,13 @@ class VK extends EventEmitter {
               description: 'Failed to deanonimize token owner: request failed',
               responseError: currentUser._error,
               requestObject: currentUser._request
-            }))
+            }));
             return false;
           }
         }
 
         facadeInstance.initialized = true;
-        facadeInstance.log('Completely initialized VK client', config);
+        logger('Completely initialized VK client', config);
         facadeInstance.emit('client:initialized');
 
         return facadeInstance;
@@ -148,17 +154,15 @@ class VK extends EventEmitter {
     }
     return new Promise(async function(done, failed) {
       let client = await performInitialization(config);
-      debugger;
+
       if(client.initialized === true) {
         done(client);
       } else {
-        client.log('FAAAAAAAAAAAAAAAAAAAIL');
         failed(client);
       }
     }).catch((err) => {
       VK.handleError(err);
     });
-    log('HUMANAFTERALL');
   }
 
   static normalizeConfiguration(config) {
@@ -288,13 +292,6 @@ class VK extends EventEmitter {
       throw new ReferenceError(`Cannot use VK without an constructed object.`);
       return false;
     }
-  }
-
-  *testMethod() {
-    yield 'one';
-    yield 'mor' +
-    'e';
-    yield 'time';
   }
 
   /**
@@ -439,21 +436,21 @@ class VK extends EventEmitter {
   //  return "resultofreturn" + ownerId;
   //}
   async getVideoAlbums(ownerId = null, needSystem = 1) {
-    let self = this;
+    let self = this,
+        formatted;
+
     let albums = await self.apiRequestPlain('execute', this.prepareExecuteQuery('video.getAlbums', {
       extended: 1,
       need_system: needSystem,
       owner_id: ownerId || null
     }));
-    let formatted;
 
     if(albums && albums instanceof this.SuccessResponse) {
       formatted = albums.getFormattedItems(this.Objects.Videoalbum);
-      debugger;
+      albums.items = formatted;
     }
 
-    console.log('done', albums);
-    debugger;
+    return albums;
   }
 
   async getVideo(ownerId = null, videoId = null, accessKey = '') {

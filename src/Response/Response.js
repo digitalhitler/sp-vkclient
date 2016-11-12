@@ -9,8 +9,6 @@ class VKResponse {
   }
 
   set request(req) {
-    console.log('---------trying to set request', req);
-    let result
     if(req && !this._requestHasBeenSet) {
       this._requestHasBeenSet = true;
       if(typeof req === 'array') {

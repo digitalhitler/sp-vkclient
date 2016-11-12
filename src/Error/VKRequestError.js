@@ -12,6 +12,10 @@ class VKRequestError extends Error {
     this.description = errorObject.description || '<no description>';
   }
 
+  /**
+   * Return stringified (and humanized) value of error.
+   * @returns {string} Human-readable error details.
+   */
   toString() {
 
     // Format server response error string if provided:

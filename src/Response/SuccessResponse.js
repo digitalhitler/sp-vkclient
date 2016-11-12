@@ -9,9 +9,7 @@ class VKSuccessResponse extends VKResponse {
     this._type = 'Success';
 
     if(typeof request === 'object') {
-      console.log('----------request param is set', request);
       this.request = request;
-      console.log('this.request result iiiiiiiiiis', this.request);
     }
   }
 
