@@ -24,7 +24,10 @@ const EventEmitter  = require('eventemitter3'),
 const SPVK_OPTIONS = {
   FULLSCOPE: 'notify,friends,photos,audio,video,docs,notes,pages,status,offers,questions,wall,groups,messages,email,notifications,stats,ads,market,offline',
   DEFAULT_APPLICATION_ID: 2274003, // another one ID: 3140623;
-  DEFAULT_APPLICATION_SECRET: 'hHbZxrka2uZ6jB1inYsH' // and another one secret: 'VeWdmVclDCtn6ihuP1nt';
+  DEFAULT_APPLICATION_SECRET: 'hHbZxrka2uZ6jB1inYsH', // and another one secret: 'VeWdmVclDCtn6ihuP1nt';
+  DEFAULT_REQUEST_INTERVAL: 340,
+  DEFAULT_REQUEST_PREFIX: 'https://api.vk.com/method/',
+  DEFAULT_AUTHORIZE_URL: 'https://oauth.vk.com/token'
 }
 
 /**
@@ -48,6 +51,8 @@ class VK extends EventEmitter {
     // Add links to response constructors:
     this.SuccessResponse = require("./Response/SuccessResponse");
     this.ErrorResponse = require("./Response/ErrorResponse");
+    this.VKAuthError = require("./Error/VKAuthError");
+    this.VKRequestError = require("./Error/VKRequestError");
 
     // And schema-based objects:
     this.Objects = {
@@ -59,7 +64,18 @@ class VK extends EventEmitter {
       if(!process.env.DEBUG) {
         process.env.DEBUG = 'sp-vkclient:*'
       }
+      this.__mainLogger = debug('sp-vkclient:main');
     }
+  }
+
+  log(...args) {
+    if(typeof this.__mainLogger === 'function' && args.length > 0) {
+      this.__mainLogger(args);
+    }
+  }
+
+  static getLogger(name) {
+    return (name && this.verbose === true ? debug(`sp-vkclient:${name}`) : VK.__fakeLogger);
   }
 
   /**
@@ -70,8 +86,13 @@ class VK extends EventEmitter {
    */
   static initialize(config) {
 
+    let logger = VK.getLogger('init');
+
     async function performInitialization(config) {
       let facadeInstance;
+
+      logger('Peforming initialization...');
+
       try {
         facadeInstance        = new VK(config);
         facadeInstance.config = VK.normalizeConfiguration(config);
@@ -79,19 +100,23 @@ class VK extends EventEmitter {
         facadeInstance._request = require('request-promise');
 
         if(facadeInstance.config.auth && facadeInstance.config.auth.need === true) {
-          facadeInstance.log('VKClient: authorizing by credentials');
-          let authorized = facadeInstance.authorizeByLogin(facadeInstance.config.auth.login, facadeInstance.config.auth.password);
-            if(authorized.access_token && authorized.user_id && authorized.email) {
+          logger('VKClient: authorizing by credentials');
+          let authorized = await facadeInstance.authorizeByLogin(facadeInstance.config.auth.login, facadeInstance.config.auth.password);
+            if(authorized.access_token && authorized.user_id) {
               facadeInstance.config.token = authorized.access_token;
+              facadeInstance.userId = authorized.user_id || 0;
               facadeInstance.authorized = true;
-              facadeInstance.userEmail = authorized.email;
+              facadeInstance.userEmail = authorized.email || '';
               delete facadeInstance.config.auth;
+
+              logger()
             }
         }
 
         if(facadeInstance.config.fastLoad !== true) {
 
           let currentUser = await facadeInstance.getUsers([]);
+
           if (currentUser && currentUser[0] && currentUser[0].id) {
             facadeInstance.userId        = currentUser[0].id;
             facadeInstance.userFirstName = currentUser[0].first_name;
@@ -101,6 +126,13 @@ class VK extends EventEmitter {
             facadeInstance.authorized = true;
             return facadeInstance;
           } else {
+            // @todo: simplify usage of VKRequestError - make it to catch request & response metadata automatically
+            VK.handleError(new facadeInstance.VKRequestError({
+              code: 'EVKINITDEANONIMIZE',
+              description: 'Failed to deanonimize token owner: request failed',
+              responseError: currentUser._error,
+              requestObject: currentUser._request
+            }))
             return false;
           }
         }
@@ -114,16 +146,19 @@ class VK extends EventEmitter {
         throw e;
       }
     }
-    return new Promise((done, failed) => {
-      let client = performInitialization(config);
+    return new Promise(async function(done, failed) {
+      let client = await performInitialization(config);
+      debugger;
       if(client.initialized === true) {
         done(client);
       } else {
+        client.log('FAAAAAAAAAAAAAAAAAAAIL');
         failed(client);
       }
     }).catch((err) => {
       VK.handleError(err);
     });
+    log('HUMANAFTERALL');
   }
 
   static normalizeConfiguration(config) {
@@ -141,7 +176,7 @@ class VK extends EventEmitter {
         throw new TypeError(`passed config.requestsInterval is not a number.`);
       }
     } else {
-      normalizedConfig.requestsInterval = 330;
+      normalizedConfig.requestsInterval = SPVK_OPTIONS.DEFAULT_REQUEST_INTERVAL;
     }
 
     normalizedConfig.scope = config.scope || SPVK_OPTIONS.FULLSCOPE;
@@ -167,6 +202,10 @@ class VK extends EventEmitter {
     }
 
     return normalizedConfig;
+  }
+
+  static __fakeLogger(...args) {
+    return true;
   }
 
   init(config, force = false) {
@@ -258,51 +297,74 @@ class VK extends EventEmitter {
     yield 'time';
   }
 
-  apiRequestPlain (method, params = {}) {
+  /**
+   * Make a plain API request (not execute)
+   * @param {String} method VK API method name
+   * @param {Object} params VK API request options
+   * @param {String} urlPrefix request prefix
+   * @returns {Promise} promise with request flow or rejected promise with error object in promise result.
+   */
+  apiRequestPlain (method, params = {}, urlPrefix = SPVK_OPTIONS.DEFAULT_REQUEST_PREFIX) {
     let reject = false;
     let request = [ method, params ];
 
+    // Check if client has request method:
     if(!this._request || typeof this._request !== 'function') {
-      reject = new ReferenceError(`Cant send requests while client is not initialized fully yet.`);
+      reject = new ReferenceError(`Can't send requests while client is not initialized fully yet.`);
     }
+
+    // Check for proper API method:
     if (typeof method !== 'string') {
       reject = new TypeError('"method" must be a string');
     }
 
+    // If all pre-checks passed - return promise that executes query:
     if(reject !== false) {
       return Promise.reject(
-          new this.ErrorResponse(reject, request)
+          new this.VKRequestError({
+            code: 'EVKREQUESTPREPARE',
+            requestObject: request,
+            description: reject || '<no description>'
+          })
       );
     }
 
-    if(this.lastRequest > 0 && Date.now() - this.lastRequest < 350) {
-      var waitTill = this.lastRequest + 350;
+    if(this.lastRequest > 0 && Date.now() - this.lastRequest < this.config.requestsInterval) {
+      let waitTill = this.lastRequest + this.config.requestsInterval;
       if(waitTill > Date.now()) {
-        console.log(`Paused due to dont oversize requests count...`);
-        while(waitTill > Date.now()){}
-        console.log(`Resumed`);
+        this.log(`Paused due to dont oversize requests count...`);
+        while(waitTill > Date.now()) { continue; }
+        this.log(`Resumed`);
       }
     }
+
+    // Update stored last request timestamp:
     this.lastRequest = Date.now();
+
+    // Make query string object:
     let query = Object.assign({
       v: this.config.version,
       access_token: this.config.token || '',
       lang: this.config.lang
     }, params);
-    return this._request(`https://api.vk.com/method/${method}`, {
+
+    // Return HTTP request promise with handler (see `then` below):
+    return this._request(`${urlPrefix}${method}`, {
       qs: query,
       timeout: 30000,
       json: true
     })
+        // HTTP response result parser function:
         .then(reply => {
-          // @todo: refactor this condition
+          // Check for error in response:
           if(!reply.error && !reply.response.error) {
+            // No error in response has been found:
             let result = new this.SuccessResponse(reply, request);
             result.request = request;
             return result;
 
           } else {
-            // @todo: implement error codes & descriptions from https://vk.com/dev/errors
+            // Found and error in response - reject promise with ErrorResponse with details
             let result = new this.ErrorResponse(reply.error || reply.response.error, request);
             result.request = request;
             return result;
@@ -310,43 +372,65 @@ class VK extends EventEmitter {
         })
         .catch(error => {
           let result = null;
-
-          debugger;
           // Connection was lost, trying to resend data
-      if (error.error && ~['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED'].indexOf(error.error.code))
-        return apiRequestPlain.call(this, url, params);
+          if (error.error && ~['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED'].indexOf(error.error.code)) {
+            return this.apiRequestPlain.call(this, method, params, urlPrefix);
+          }
 
-      // Captcha needed
-      if (error.code === 14) {
-        error.description = 'Captcha wanted';
-        result = new this.ErrorResponse(new Error(error), request);
-      }
+          // Captcha needed
+          if (error.code === 14) {
+            error.description = 'Captcha wanted';
+            result = new this.ErrorResponse(new Error(error), request);
+          }
 
-      // Probably auth error
-      if (error.error && error.error.error && error.error.error_description) {
-        result = new this.ErrorResponse(new VKAuthError({
-          error:       'VK Error - ' + error.error.error,
-          description: error.error.error_description
-        }), request);
-      }
+          // Probably auth error
+          if (error.error && error.error.error && error.error.error_description) {
+            result = new this.ErrorResponse(new this.VKAuthError({
+              error:       'VK Error - ' + error.error.error,
+              description: error.error.error_description
+            }), request);
+          }
 
       return result;
     });
   }
 
-  async authorizeByLogin() {
-    return this._request('https://oauth.vk.com/token', {
-      qs: {
-        grant_type:    'password',
-        client_id:     this.config.appId,
-        client_secret: this.config.appSecret,
-        username:      this.config.auth.login,
-        password:      this.config.auth.password,
-        scope:         this.config.scope.join(','),
-        v:             this.config.version
-      },
+  /**
+   * Makes raw authorization request pretending official mobile app to get full-featured (direct links, proper permissions
+   * etc.) access token.
+   * @param {Array} args auth request options
+   * @returns {*}
+   */
+  async authorizeByLogin(...args) {
+    debugger;
+    let opts = null;
+    if(args[2]) {
+      opts = args[2];
+    }
+
+    let queryString = {
+      grant_type:   'password',
+      v:             this.config.version,
+      client_id:     this.config.appId,
+      client_secret: this.config.appSecret,
+      scope:         this.config.scope.join(',')
+    };
+
+    queryString.username = args[0] || this.config.auth.login || undefined;
+    queryString.password = args[1] || this.config.auth.password || undefined;
+
+    if(opts !== null) {
+      for(let curr in opts) {
+        queryString[curr] = opts[curr];
+      }
+    }
+
+    this.log(`Performing auth`)
+
+    return this._request(SPVK_OPTIONS.DEFAULT_AUTHORIZE_URL, {
+      qs: queryString,
       json: true,
-      timeout: 5000
+      timeout: 10000
     });
   }
 
@@ -392,7 +476,7 @@ class VK extends EventEmitter {
     }));
   }
 
-  getUsers(ids) {
+  async getUsers(ids) {
     if(typeof ids === 'array') {
       ids = ids.join(',');
     } else if(ids === undefined || ids === null) {
@@ -487,8 +571,16 @@ class VK extends EventEmitter {
   }
 
   static handleError(err) {
-    console.error('Error happened!');
-    console.dir(err);
+    debugger;
+    if(typeof err.toString === 'function') {
+      console.error(err.toString());
+    } else {
+      console.error('EUNKNOWN: Error happenned.');
+      if(typeof console.dir === 'function') {
+        console.dir(err);
+      }
+    }
+    process.exit(err.code || 'EUNKNOWN');
   }
 }
 
