@@ -1,7 +1,7 @@
 {
   "name": "sp-vkclient",
-  "version": "2.0.0",
-  "description": "VK.com API Client for Node.JS with async-await flow",
+  "version": "2.0.1",
+  "description": "VK.com API Client for Node.JS with generator-based flow",
   "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -14,7 +14,8 @@
     "vk",
     "api",
     "vkontante",
-    "generator",
+    "async",
+    "await",
     "rest"
   ],
   "author": "Sergey Petrenko <spetrenko@me.com>",
@@ -22,16 +23,5 @@
   "bugs": {
     "url": "https://github.com/digitalhitler/sp-vkclient/issues"
   },
-  "homepage": "https://github.com/digitalhitler/sp-vkclient#readme",
-  "dependencies": {
-    "asyncawait": "^1.0.6",
-    "chalk": "^1.1.3",
-    "co": "^4.6.0",
-    "eventemitter3": "^2.0.2",
-    "request": "^2.76.0",
-    "request-promise": "^4.1.1"
-  },
-  "devDependencies": {
-    "debug": "^2.2.0"
-  }
+  "homepage": "https://github.com/digitalhitler/sp-vkclient#readme"
 }
